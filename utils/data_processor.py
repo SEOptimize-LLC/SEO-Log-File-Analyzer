@@ -30,7 +30,7 @@ def process_log_data(df: pd.DataFrame) -> pd.DataFrame:
         # Apply sampling if needed
         if ENABLE_SAMPLING and len(df) > MIN_ROWS_FOR_SAMPLING:
             df = apply_sampling(df, SAMPLE_RATE)
-            st.info(f"Sampling applied: {len(df):,} rows ({})")
+            st.info(f"Sampling applied: {len(df):,} rows")
         
         # Ensure timestamp column
         df = ensure_timestamp(df)
