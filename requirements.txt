@@ -1,54 +1,43 @@
-# Fixed requirements.txt for Streamlit Cloud deployment
-# Optimized for free tier resource limitations
+# Fixed requirements.txt for Streamlit Cloud deployment on Python 3.13
+# Resolves numpy/pandas compatibility issues
 
-# Core dependencies
+# Core dependencies - compatible versions for Python 3.13
 streamlit>=1.35.0
-pandas>=2.2.0,<2.3.0
-numpy>=1.24.0,<1.26.0
-
-# Data processing (choose one - removing polars to avoid conflicts)
-# polars==0.20.2  # Commented out - conflicts with pandas and uses extra memory
+pandas>=2.2.0
+numpy>=1.26.0
 
 # Visualization
-plotly>=5.20.0,<5.23.0
+plotly>=5.20.0
 
-# ML and Analytics (optimized versions)
-scikit-learn>=1.4.0,<1.6.0
-# prophet>=1.1.5  # Commented out - heavy dependency, causes deployment issues
+# ML and Analytics - Python 3.13 compatible versions
+scikit-learn>=1.4.0
 
 # Networking and parsing
-dnspython>=2.4.0,<2.7.0
-user-agents>=2.2.0,<3.0.0
-httpagentparser>=1.9.5,<2.0.0
-ua-parser>=0.18.0,<1.0.0
-tldextract>=5.1.0,<6.0.0
-validators>=0.22.0,<1.0.0
+dnspython>=2.4.0
+user-agents>=2.2.0
+httpagentparser>=1.9.5
+ua-parser>=0.18.0
+tldextract>=5.1.0
+validators>=0.22.0
 
 # Date/time handling
-python-dateutil>=2.8.0,<3.0.0
-pytz>=2023.3,<2025.0.0
+python-dateutil>=2.8.0
+pytz>=2023.3
 
 # File handling and export
-openpyxl>=3.1.0,<4.0.0
-xlsxwriter>=3.1.0,<4.0.0
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
 
-# Streamlit UI components (lightweight alternatives)
-streamlit-option-menu>=0.3.6,<1.0.0
-# st-aggrid>=0.3.4  # Commented out - can be heavy, use native st.dataframe
-
-# Basic visualization (lighter alternatives)
-# matplotlib>=3.8.0,<4.0.0  # Commented out - plotly is sufficient
-# seaborn>=0.13.0,<1.0.0    # Commented out - plotly is sufficient
+# Streamlit UI components
+streamlit-option-menu>=0.3.6
 
 # Network analysis
-networkx>=3.2.0,<4.0.0
+networkx>=3.2.0
 
 # Image processing
-pillow>=10.1.0,<11.0.0
+pillow>=10.1.0
 
-# Remove problematic/redundant packages:
-# redis - not used in current implementation
-# prophet - too heavy for free tier, causes deployment issues
-# altair - redundant with plotly
-# polars - conflicts with pandas
-# matplotlib/seaborn - redundant with plotly
+# Note: Removed problematic packages for Python 3.13:
+# - Fixed numpy/pandas version conflict
+# - Removed packages that cause distutils errors
+# - Streamlined for Streamlit Cloud compatibility
