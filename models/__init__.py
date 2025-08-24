@@ -1,15 +1,11 @@
 # models/__init__.py
-
 """
-Models package for SEO Log File Analyzer
+Machine Learning Models for SEO Log File Analyzer
+
+This package contains ML models for predictive analytics.
 """
 
-from .ml_models import BotClassifier, AnomalyDetector
-from .predictive_analytics import CrawlPredictor, PerformanceForecaster
+# Simple __init__.py to avoid circular imports
+# Models will be imported individually as needed
 
-__all__ = [
-    'BotClassifier',
-    'AnomalyDetector',
-    'CrawlPredictor',
-    'PerformanceForecaster'
-]
+__version__ = "1.0.0"
