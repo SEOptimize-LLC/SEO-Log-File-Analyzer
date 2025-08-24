@@ -1,3 +1,6 @@
+# Fixed requirements.txt for Streamlit Cloud deployment
+# Optimized for free tier resource limitations
+
 # Core dependencies
 streamlit>=1.35.0
 pandas>=2.2.0,<2.3.0
