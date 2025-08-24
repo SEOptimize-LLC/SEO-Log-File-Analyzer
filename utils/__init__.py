@@ -1,17 +1,12 @@
 # utils/__init__.py
-
 """
-Utilities package for SEO Log File Analyzer
+Utility functions package for SEO Log File Analyzer
+
+This package contains utility functions for data processing and export handling.
 """
 
-from .data_processor import process_log_data, apply_sampling, chunk_dataframe
-from .export_handler import ExportHandler, generate_pdf_report, export_to_excel
+# Simple __init__.py to avoid circular imports
+# Individual modules can be imported directly as needed
 
-__all__ = [
-    'process_log_data',
-    'apply_sampling',
-    'chunk_dataframe',
-    'ExportHandler',
-    'generate_pdf_report',
-    'export_to_excel'
-]
+__version__ = "1.0.0"
+__all__ = []  # Let modules be imported directly to avoid circular imports
