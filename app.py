@@ -670,164 +670,103 @@ def apply_filters(data):
     
     return filtered
 
-def main():
-    """Main application entry point - OPTIMIZED layout without sidebar tabs"""
-    init_session_state()
-    display_header()
+def sidebar_controls():
+    """Render sidebar controls - MOVED UP, removed tabs and extra elements"""
+    with st.sidebar:
+        # File Upload - MOVED TO TOP
+        st.subheader("📁 Upload Log File")
+        uploaded_file = st.file_uploader(
+            "Choose a log file",
+            type=['log', 'txt', 'csv', 'json', 'gz'],
+            help="Supported formats: Apache, Nginx, IIS, CloudFront, JSON"
+        )
 
-    # Upload section at the top
-    uploaded_file = render_upload_section()
+        if uploaded_file is not None:
+            file_details = {
+                "Filename": uploaded_file.name,
+                "Size": f"{uploaded_file.size / 1024 / 1024:.2f} MB",
+                "Type": uploaded_file.type
+            }
+            st.json(file_details)
 
-    # Filters section (only show if data is processed)
-    render_filters_section()
+            if st.button("🚀 Process File", type="primary", use_container_width=True):
+                process_file(uploaded_file)
 
-    # Main content tabs - MOVED to main content area
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Overview",
-        "📈 Quick Stats",
-        "⚡ Performance",
-        "🎯 SEO Insights",
-        "ℹ️ About"
-    ])
-
-    with tab1:
-        display_overview_metrics()
-
-    with tab2:
-        # KEEP original Quick Stats functionality
+        # Date Range Filter - MOVED UP (only show if data is processed)
         if st.session_state[SESSION_KEYS['processed']] is not None:
-            data = apply_filters(st.session_state[SESSION_KEYS['processed']])
+            st.markdown("---")
+            st.subheader("📅 Date Range")
+            date_range = st.date_input(
+                "Select period",
+                value=(
+                    st.session_state[SESSION_KEYS['date_range']][0],
+                    st.session_state[SESSION_KEYS['date_range']][1]
+                ),
+                max_value=datetime.now().date(),
+                key="date_selector"
+            )
 
+            if len(date_range) == 2:
+                st.session_state[SESSION_KEYS['date_range']] = date_range
+
+            # Quick Date Ranges - MOVED UP
+            st.markdown("**Quick Select:**")
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("📊 Request Methods")
-                if 'method' in data.columns:
-                    method_dist = data['method'].value_counts()
-                    fig = px.pie(
-                        values=method_dist.values,
-                        names=method_dist.index,
-                        title="HTTP Methods Distribution"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Method data not available")
-
+                if st.button("Last 7 Days"):
+                    update_date_range(7)
+                if st.button("Last 30 Days"):
+                    update_date_range(30)
             with col2:
-                st.subheader("🌍 Top Referrers")
-                if 'referrer' in data.columns:
-                    referrers = data['referrer'].value_counts().head(10)
-                    fig = px.bar(
-                        x=referrers.values,
-                        y=referrers.index,
-                        orientation='h',
-                        title="Top 10 Referrers"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Referrer data not available")
-        else:
-            st.info("Upload a log file to view statistics")
+                if st.button("Last 14 Days"):
+                    update_date_range(14)
+                if st.button("Last 90 Days"):
+                    update_date_range(90)
 
-    with tab3:
-        # KEEP original Performance functionality
-        if st.session_state[SESSION_KEYS['processed']] is not None:
-            st.subheader("⚡ Performance Metrics")
-            data = apply_filters(st.session_state[SESSION_KEYS['processed']])
+            # Filters - MOVED UP
+            st.markdown("---")
+            st.subheader("🎯 Filters")
 
-            if 'response_time' in data.columns:
-                # Response time percentiles
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("P50 (Median)", f"{data['response_time'].quantile(0.5):.0f} ms")
-                with col2:
-                    st.metric("P75", f"{data['response_time'].quantile(0.75):.0f} ms")
-                with col3:
-                    st.metric("P95", f"{data['response_time'].quantile(0.95):.0f} ms")
-                with col4:
-                    st.metric("P99", f"{data['response_time'].quantile(0.99):.0f} ms")
+            data = st.session_state[SESSION_KEYS['processed']]
 
-                # Response time distribution
-                fig = px.histogram(
-                    data,
-                    x='response_time',
-                    nbins=50,
-                    title="Response Time Distribution",
-                    labels={'response_time': 'Response Time (ms)', 'count': 'Number of Requests'}
+            # Status Code Filter
+            status_codes = st.multiselect(
+                "Status Codes",
+                options=['2xx', '3xx', '4xx', '5xx'],
+                default=['2xx', '3xx', '4xx', '5xx']
+            )
+
+            # Bot Filter
+            bot_filter = st.radio(
+                "Traffic Type",
+                options=['All', 'Bots Only', 'Humans Only'],
+                horizontal=True
+            )
+
+            # User Agent Filter
+            if 'user_agent' in data.columns:
+                user_agents = st.multiselect(
+                    "User Agents",
+                    options=data['user_agent'].value_counts().head(20).index.tolist(),
+                    default=[]
                 )
-                fig.add_vline(x=SLOW_RESPONSE_MS, line_dash="dash", line_color="orange",
-                             annotation_text="Slow Threshold")
-                fig.add_vline(x=CRITICAL_RESPONSE_MS, line_dash="dash", line_color="red",
-                             annotation_text="Critical Threshold")
-                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Response time data not available in log file")
-        else:
-            st.info("Upload a log file to view performance metrics")
+                user_agents = []
 
-    with tab4:
-        # KEEP original SEO Insights functionality
-        st.subheader("🎯 SEO Insights Preview")
+            st.session_state[SESSION_KEYS['filters']] = {
+                'status_codes': status_codes,
+                'bot_filter': bot_filter,
+                'user_agents': user_agents
+            }
 
-        if st.session_state[SESSION_KEYS['processed']] is not None:
-            data = apply_filters(st.session_state[SESSION_KEYS['processed']])
+def main():
+    """Main application entry point - CLEAN layout without tabs"""
+    init_session_state()
+    display_header()
+    sidebar_controls()
 
-            # Quick SEO metrics
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                bot_traffic = data['is_bot'].sum() if 'is_bot' in data.columns else 0
-                st.metric("Bot Traffic", f"{bot_traffic:,}", f"{bot_traffic/len(data)*100:.1f}%")
-
-            with col2:
-                if 'status' in data.columns:
-                    not_found = (data['status'] == 404).sum()
-                    st.metric("404 Errors", f"{not_found:,}", "Check Error page for details")
-                else:
-                    st.metric("404 Errors", "N/A", "---")
-
-            with col3:
-                if 'url' in data.columns:
-                    unique_urls = data['url'].nunique()
-                    st.metric("Unique URLs", f"{unique_urls:,}", "---")
-                else:
-                    st.metric("Unique URLs", "N/A", "---")
-
-    with tab5:
-        # KEEP original About functionality
-        st.subheader("ℹ️ About SEO Log File Analyzer")
-        st.markdown(f"""
-        ### Version {APP_VERSION}
-
-        **SEO Log File Analyzer** is a comprehensive tool for analyzing server log files to gain SEO insights.
-
-        #### Features:
-        - 🔍 Multi-format log file support
-        - 🤖 AI-powered bot detection
-        - ⚡ Performance analysis
-        - 📊 Real-time visualizations
-        - 📈 SEO metrics and insights
-        - 📥 Export capabilities
-
-        #### Supported Log Formats:
-        - Apache (Common/Combined)
-        - Nginx
-        - IIS (W3C Extended)
-        - CloudFront
-        - JSON structured logs
-
-        #### Technology Stack:
-        - Streamlit for UI
-        - Pandas/Polars for data processing
-        - Plotly for visualizations
-        - Scikit-learn for ML models
-
-        ---
-
-        **Need Help?**
-        - 📖 [Documentation](https://github.com/yourusername/seo-log-analyzer)
-        - 🐛 [Report Issues](https://github.com/yourusername/seo-log-analyzer/issues)
-        - 💡 [Feature Requests](https://github.com/yourusername/seo-log-analyzer/discussions)
-        """)
+    # Main content - Just the overview dashboard
+    display_overview_metrics()
 
 if __name__ == "__main__":
     main()

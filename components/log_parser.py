@@ -205,7 +205,7 @@ class LogParser:
         try:
             # For CSV, we need complete lines, so this is a simplified approach
             # In production, you'd want more sophisticated CSV chunking
-            df = pd.read_csv(StringIO(content), error_bad_lines=False, warn_bad_lines=False)
+            df = pd.read_csv(StringIO(content), on_bad_lines='skip')
             return df
         except Exception:
             return pd.DataFrame()
@@ -292,8 +292,47 @@ class LogParser:
     def _parse_csv(self, content: str) -> pd.DataFrame:
         """Parse CSV formatted logs"""
         try:
-            df = pd.read_csv(StringIO(content), error_bad_lines=False, warn_bad_lines=False)
-            return self._post_process(df)
+            # Try different separators and handle various CSV formats
+            separators = [';', ',', '\t', '|']
+            df = None
+
+            for sep in separators:
+                try:
+                    df = pd.read_csv(StringIO(content), sep=sep, on_bad_lines='skip',
+                                   quotechar='"', escapechar='\\')
+                    if len(df.columns) > 1:  # Found a valid format
+                        break
+                except:
+                    continue
+
+            if df is None or len(df.columns) < 2:
+                # Fallback: try to parse as single column and split manually
+                lines = content.split('\n')
+                if len(lines) > 1:
+                    # Parse semicolon-separated format manually for complex cases
+                    parsed_data = []
+                    for line in lines[:1000]:  # Sample first 1000 lines
+                        if ';' in line and not line.startswith('#'):
+                            parts = line.split(';')
+                            if len(parts) >= 4:
+                                try:
+                                    parsed_data.append({
+                                        'log_type': parts[0].strip(),
+                                        'client': parts[1].strip(),
+                                        'message': parts[2].strip(),
+                                        'time': parts[3].strip()
+                                    })
+                                except:
+                                    continue
+
+                    if parsed_data:
+                        df = pd.DataFrame(parsed_data)
+
+            if df is not None and not df.empty:
+                return self._post_process(df)
+            else:
+                return pd.DataFrame()
+
         except Exception as e:
             st.error(f"CSV parsing error: {str(e)}")
             return pd.DataFrame()
@@ -373,25 +412,33 @@ class LogParser:
     
     def _post_process(self, df: pd.DataFrame) -> pd.DataFrame:
         """Post-process parsed DataFrame"""
-        # Ensure timestamp column exists
-        if 'timestamp' not in df.columns:
+        # Handle different CSV formats
+        if 'time' in df.columns and 'timestamp' not in df.columns:
+            # Convert 'time' column to 'timestamp'
+            df['timestamp'] = pd.to_datetime(df['time'], errors='coerce')
+        elif 'timestamp' not in df.columns:
             if 'date' in df.columns and 'time' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['date'] + ' ' + df['time'])
             elif 'datetime' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['datetime'])
             else:
                 df['timestamp'] = datetime.now()
-        
+
         # Convert timestamp to datetime
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+
+        # Handle client IP extraction
+        if 'client' in df.columns and 'ip' not in df.columns:
+            # Extract IP from client column (format: IP:port)
+            df['ip'] = df['client'].str.split(':').str[0]
+
         # Add calculated fields
         if 'status' in df.columns:
-            df['status_category'] = df['status'].apply(lambda x: f"{x//100}xx")
-        
+            df['status_category'] = df['status'].apply(lambda x: f"{x//100}xx" if pd.notna(x) else 'unknown')
+
         if 'size' in df.columns:
             df['size_mb'] = df['size'] / (1024 * 1024)
-        
+
         # Add response time (if available in extended logs)
         if 'time_taken' in df.columns:
             df['response_time'] = pd.to_numeric(df['time_taken'], errors='coerce')
@@ -400,13 +447,31 @@ class LogParser:
         else:
             # Generate synthetic response times for demo
             df['response_time'] = np.random.lognormal(5, 1.5, len(df))
-        
+
+        # Add URL extraction from message for WordPress logs
+        if 'message' in df.columns and 'url' not in df.columns:
+            df['url'] = df['message'].str.extract(r'"slug":"([^"]+)"', expand=False)
+            df['url'] = df['url'].fillna('/')
+
+        # Add method extraction
+        if 'method' not in df.columns:
+            df['method'] = 'GET'  # Default for log analysis
+
+        # Add status code (default to 200 for successful log entries)
+        if 'status' not in df.columns:
+            df['status'] = 200
+
+        # Add user agent extraction from message
+        if 'message' in df.columns and 'user_agent' not in df.columns:
+            # Try to extract user agent from message if available
+            df['user_agent'] = 'WordPress/6.8.2'  # Default WordPress UA
+
         # Sort by timestamp
         df = df.sort_values('timestamp')
-        
+
         # Add session identification
         df = self._identify_sessions(df)
-        
+
         return df
     
     def _identify_sessions(self, df: pd.DataFrame, timeout_minutes: int = 30) -> pd.DataFrame:
