@@ -16,6 +16,12 @@ SAMPLE_RATE = 0.1  # Sampling rate for large files (10%)
 ENABLE_SAMPLING = True
 MIN_ROWS_FOR_SAMPLING = 100000
 
+# Performance Settings
+ENABLE_LAZY_LOADING = True  # Load components only when needed
+ENABLE_PERSISTENT_CACHE = True  # Use file-based caching
+FAST_MODE = True  # Skip heavy computations for faster loading
+DISABLE_ML_COMPONENTS = False  # Set to True to disable ML components for faster startup
+
 # Cache Settings
 ENABLE_CACHE = True
 CACHE_TTL = 3600  # Cache duration in seconds

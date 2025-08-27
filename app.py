@@ -20,7 +20,7 @@ from queue import Queue
 # Add project root to path - KEEP original import structure
 sys.path.append(str(Path(__file__).parent))
 
-# Import original configuration - KEEP all settings
+# Import original configuration - OPTIMIZED for fast loading
 try:
     from config import *
 except ImportError:
@@ -40,6 +40,10 @@ except ImportError:
     SLOW_RESPONSE_MS = 1000
     CRITICAL_RESPONSE_MS = 3000
     ERROR_RATE_THRESHOLD = 0.05
+    ENABLE_LAZY_LOADING = True
+    ENABLE_PERSISTENT_CACHE = True
+    FAST_MODE = True
+    DISABLE_ML_COMPONENTS = False
 
 # Lazy loading system for components - OPTIMIZATION
 @st.cache_resource
@@ -55,6 +59,9 @@ def get_log_parser():
 @st.cache_resource
 def get_bot_detector():
     """Lazy load BotDetector component"""
+    if DISABLE_ML_COMPONENTS:
+        return None
+
     try:
         from components.bot_detector import BotDetector
         return BotDetector
@@ -65,6 +72,9 @@ def get_bot_detector():
 @st.cache_resource
 def get_seo_analyzer():
     """Lazy load SEOAnalyzer component"""
+    if FAST_MODE:
+        return None  # Skip heavy SEO analysis in fast mode
+
     try:
         from components.seo_analyzer import SEOAnalyzer
         return SEOAnalyzer
@@ -85,6 +95,9 @@ def get_cache_manager():
 @st.cache_resource
 def get_performance_analyzer():
     """Lazy load PerformanceAnalyzer component"""
+    if FAST_MODE:
+        return None  # Skip heavy performance analysis in fast mode
+
     try:
         from components.performance_analyzer import PerformanceAnalyzer
         return PerformanceAnalyzer
