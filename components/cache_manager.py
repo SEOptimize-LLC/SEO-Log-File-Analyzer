@@ -13,14 +13,16 @@ from typing import Any, Optional, Dict
 from config import CACHE_TTL, ENABLE_CACHE, MAX_CACHE_SIZE_MB
 
 class CacheManager:
-    """Manage caching for processed data"""
-    
-    def __init__(self):
+    """Manage caching for processed data with persistent file-based storage"""
+
+    def __init__(self, use_persistent_cache: bool = True):
         self.enabled = ENABLE_CACHE
         self.ttl = CACHE_TTL
         self.max_size_mb = MAX_CACHE_SIZE_MB
+        self.use_persistent_cache = use_persistent_cache
+        self.file_cache = FileCache() if use_persistent_cache else None
         self._init_cache()
-    
+
     def _init_cache(self):
         """Initialize cache in session state"""
         if 'cache_store' not in st.session_state:
@@ -30,52 +32,85 @@ class CacheManager:
     
     def get(self, key: str) -> Optional[Any]:
         """
-        Get cached value
-        
+        Get cached value with persistent file cache support
+
         Args:
             key: Cache key
-            
+
         Returns:
             Cached value or None if not found or expired
         """
         if not self.enabled:
             return None
-        
+
+        # First check session cache
         if key in st.session_state.cache_store:
-            # Check if expired
             metadata = st.session_state.cache_metadata.get(key, {})
             if self._is_expired(metadata):
                 self.delete(key)
                 return None
-            
+
             # Update access time
             st.session_state.cache_metadata[key]['last_accessed'] = datetime.now()
             return st.session_state.cache_store[key]
-        
+
+        # Then check persistent file cache
+        if self.use_persistent_cache and self.file_cache:
+            cached_data = self.file_cache.load(key)
+            if cached_data is not None:
+                # Load metadata from file cache or create new
+                metadata = cached_data.get('_metadata', {})
+                if not self._is_expired(metadata):
+                    # Move to session cache for faster access
+                    actual_data = cached_data.get('_data')
+                    if actual_data is not None:
+                        st.session_state.cache_store[key] = actual_data
+                        st.session_state.cache_metadata[key] = {
+                            **metadata,
+                            'last_accessed': datetime.now()
+                        }
+                        return actual_data
+
         return None
     
-    def set(self, key: str, value: Any, ttl: Optional[int] = None):
+    def set(self, key: str, value: Any, ttl: Optional[int] = None,
+            persistent: bool = False):
         """
-        Set cache value
-        
+        Set cache value with optional persistent storage
+
         Args:
             key: Cache key
             value: Value to cache
             ttl: Optional TTL in seconds (overrides default)
+            persistent: Whether to save to persistent file cache
         """
         if not self.enabled:
             return
-        
+
         # Check cache size
         if self._get_cache_size() > self.max_size_mb:
             self._evict_lru()
-        
+
+        # Store in session cache
         st.session_state.cache_store[key] = value
-        st.session_state.cache_metadata[key] = {
+        metadata = {
             'created': datetime.now(),
             'last_accessed': datetime.now(),
             'ttl': ttl or self.ttl
         }
+        st.session_state.cache_metadata[key] = metadata
+
+        # Store in persistent cache if requested and available
+        if persistent and self.use_persistent_cache and self.file_cache:
+            try:
+                persistent_data = {
+                    '_data': value,
+                    '_metadata': metadata
+                }
+                self.file_cache.save(key, persistent_data)
+            except Exception:
+                # If persistent caching fails, continue with session cache only
+                pass
     
     def delete(self, key: str):
         """Delete cached value"""

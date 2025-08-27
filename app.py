@@ -13,6 +13,9 @@ import sys
 import traceback
 import logging
 from typing import Optional, Dict, Any
+import time
+import threading
+from queue import Queue
 
 # Add project root to path - KEEP original import structure
 sys.path.append(str(Path(__file__).parent))
@@ -38,71 +41,79 @@ except ImportError:
     CRITICAL_RESPONSE_MS = 3000
     ERROR_RATE_THRESHOLD = 0.05
 
-# Safe component imports - KEEP all original components, add error handling
-def safe_import_components():
-    """Import all original components with graceful fallbacks"""
-    components = {}
-    
-    # LogParser - KEEP full functionality
+# Lazy loading system for components - OPTIMIZATION
+@st.cache_resource
+def get_log_parser():
+    """Lazy load LogParser component"""
     try:
         from components.log_parser import LogParser
-        components['LogParser'] = LogParser
+        return LogParser
     except ImportError as e:
         st.warning(f"Advanced log parsing unavailable: {e}")
-        components['LogParser'] = None
-    
-    # BotDetector - KEEP AI-powered bot detection
+        return None
+
+@st.cache_resource
+def get_bot_detector():
+    """Lazy load BotDetector component"""
     try:
         from components.bot_detector import BotDetector
-        components['BotDetector'] = BotDetector
+        return BotDetector
     except ImportError as e:
         st.warning(f"AI bot detection unavailable: {e}")
-        components['BotDetector'] = None
-    
-    # SEOAnalyzer - KEEP advanced SEO analysis
+        return None
+
+@st.cache_resource
+def get_seo_analyzer():
+    """Lazy load SEOAnalyzer component"""
     try:
         from components.seo_analyzer import SEOAnalyzer
-        components['SEOAnalyzer'] = SEOAnalyzer
+        return SEOAnalyzer
     except ImportError as e:
         st.warning(f"Advanced SEO analysis unavailable: {e}")
-        components['SEOAnalyzer'] = None
-    
-    # CacheManager - KEEP caching system
+        return None
+
+@st.cache_resource
+def get_cache_manager():
+    """Lazy load CacheManager component"""
     try:
         from components.cache_manager import CacheManager
-        components['CacheManager'] = CacheManager
+        return CacheManager
     except ImportError as e:
         st.info(f"Cache manager unavailable: {e}")
-        components['CacheManager'] = None
-    
-    # PerformanceAnalyzer - KEEP performance analysis
+        return None
+
+@st.cache_resource
+def get_performance_analyzer():
+    """Lazy load PerformanceAnalyzer component"""
     try:
         from components.performance_analyzer import PerformanceAnalyzer
-        components['PerformanceAnalyzer'] = PerformanceAnalyzer
+        return PerformanceAnalyzer
     except ImportError as e:
         st.info(f"Performance analysis unavailable: {e}")
-        components['PerformanceAnalyzer'] = None
-    
-    # Visualizations - KEEP advanced charts
+        return None
+
+@st.cache_resource
+def get_visualizations():
+    """Lazy load visualization functions"""
     try:
         from components.visualizations import create_overview_charts
-        components['create_overview_charts'] = create_overview_charts
+        return create_overview_charts
     except ImportError as e:
         st.info(f"Advanced visualizations unavailable: {e}")
-        components['create_overview_charts'] = None
-    
-    # Data Processor - KEEP advanced data processing
+        return None
+
+@st.cache_resource
+def get_data_processor():
+    """Lazy load data processing functions"""
     try:
-        from utils.data_processor import process_log_data
-        components['process_log_data'] = process_log_data
+        from utils.data_processor import process_log_data, stream_process_log_data
+        return {
+            'process_log_data': process_log_data,
+            'stream_process_log_data': stream_process_log_data
+        }
     except ImportError as e:
         st.info(f"Advanced data processing unavailable: {e}")
-        components['process_log_data'] = None
-    
-    return components
-
-# Load all components - KEEP original architecture
-COMPONENTS = safe_import_components()
+        return None
 
 # Configure logging for debugging - KEEP original logging
 logging.basicConfig(level=logging.INFO)
@@ -129,17 +140,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state - KEEP all original state management
+# Initialize session state - OPTIMIZED with lazy loading and async processing
 def init_session_state():
-    """Initialize session state variables - KEEP all original functionality"""
+    """Initialize session state variables with lazy loading and async processing support"""
+    cache_manager_class = get_cache_manager()
+
     for key, default in {
         SESSION_KEYS['data']: None,
         SESSION_KEYS['processed']: None,
-        SESSION_KEYS['cache']: COMPONENTS['CacheManager']() if COMPONENTS['CacheManager'] else None,
+        SESSION_KEYS['cache']: cache_manager_class() if cache_manager_class else None,
         SESSION_KEYS['filters']: {},
         SESSION_KEYS['date_range']: (datetime.now() - timedelta(days=30), datetime.now()),
         'file_uploaded': False,
         'processing_complete': False,
+        'processing_mode': 'auto',  # Auto-detect optimal processing mode
+        'processing_status': 'idle',  # idle, processing, completed, error
+        'processing_progress': 0,
+        'processing_message': '',
+        'processing_thread': None,
+        'processing_cancelled': False,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = default
@@ -269,53 +288,105 @@ def sidebar_controls():
             """)
 
 def process_file(uploaded_file):
-    """Process uploaded log file - KEEP ALL original processing logic"""
+    """Process uploaded log file with optimized lazy loading and chunked processing"""
     with st.spinner("🔄 Processing log file..."):
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
+
         try:
-            # Step 1: Parse log file - KEEP original parsing
+            # Get file size to determine processing strategy
+            file_size_mb = len(uploaded_file.read()) / (1024 * 1024)
+            uploaded_file.seek(0)  # Reset file pointer
+
+            # Choose processing mode based on file size
+            if file_size_mb > 50:
+                processing_mode = 'minimal'
+                use_chunked = True
+                status_text.text("Large file detected - using optimized processing...")
+            elif file_size_mb > 10:
+                processing_mode = 'basic'
+                use_chunked = False
+            else:
+                processing_mode = 'full'
+                use_chunked = False
+
+            progress_bar.progress(10)
+
+            # Step 1: Parse log file with appropriate method
             status_text.text("Parsing log file...")
-            progress_bar.progress(20)
-            
-            if COMPONENTS['LogParser']:
-                parser = COMPONENTS['LogParser']()
+            progress_bar.progress(30)
+
+            parser_class = get_log_parser()
+            if parser_class and use_chunked:
+                # Use chunked processing for large files
+                parser = parser_class()
+                raw_data = parser.parse(uploaded_file, chunked=True,
+                                       progress_callback=lambda p, msg: status_text.text(msg))
+            elif parser_class:
+                parser = parser_class()
                 raw_data = parser.parse(uploaded_file)
             else:
                 # Fallback parsing if component unavailable
                 raw_data = fallback_parse(uploaded_file)
-            
-            # Step 2: Process data - KEEP original processing
+
+            # Step 2: Process data with optimized pipeline
             status_text.text("Processing data...")
-            progress_bar.progress(50)
-            
-            if COMPONENTS['process_log_data']:
-                processed_data = COMPONENTS['process_log_data'](raw_data)
+            progress_bar.progress(60)
+
+            data_processor = get_data_processor()
+            if data_processor and 'process_log_data' in data_processor:
+                processed_data = data_processor['process_log_data'](
+                    raw_data,
+                    processing_mode=processing_mode,
+                    enable_progress=False
+                )
             else:
                 # Basic processing fallback
                 processed_data = basic_process_data(raw_data)
-            
-            # Step 3: Cache results - KEEP original caching
+
+            # Step 3: Cache results (with persistent caching for large datasets)
             status_text.text("Caching results...")
-            progress_bar.progress(80)
-            
+            progress_bar.progress(90)
+
+            # Cache raw data in session only (too large for persistent cache)
             st.session_state[SESSION_KEYS['data']] = raw_data
+
+            # Cache processed data with persistent option for large datasets
+            cache_manager = get_cache_manager()
+            if cache_manager:
+                # Create cache key based on file content hash
+                import hashlib
+                file_hash = hashlib.md5(uploaded_file.read()).hexdigest()
+                uploaded_file.seek(0)  # Reset file pointer
+
+                cache_key = f"processed_data_{file_hash}_{processing_mode}"
+
+                # Use persistent caching for large datasets
+                use_persistent = file_size_mb > 10
+                cache_manager.set(cache_key, processed_data,
+                                persistent=use_persistent)
+
+                # Store cache key in session for retrieval
+                st.session_state['processed_data_cache_key'] = cache_key
+
+            # Also store in session for immediate access
             st.session_state[SESSION_KEYS['processed']] = processed_data
             st.session_state['file_uploaded'] = True
             st.session_state['processing_complete'] = True
-            
+            st.session_state['processing_mode'] = processing_mode
+
             # Complete
             progress_bar.progress(100)
             status_text.text("✅ Processing complete!")
-            st.success(f"Successfully processed {len(processed_data):,} log entries")
-            
+            st.success(f"Successfully processed {len(processed_data):,} log entries "
+                      f"(mode: {processing_mode})")
+
             # Clear progress indicators after 2 seconds
             import time
             time.sleep(2)
             progress_bar.empty()
             status_text.empty()
-            
+
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
             logger.error(f"Processing error: {traceback.format_exc()}")
@@ -492,34 +563,35 @@ def display_overview_metrics():
             "✅ Good" if 'status' in filtered_data.columns and error_rate < ERROR_RATE_THRESHOLD * 100 else "⚠️ High"
         )
     
-    # Display charts - KEEP all original visualizations
+    # Display charts - OPTIMIZED with lazy loading
     st.markdown("---")
-    
-    if COMPONENTS['create_overview_charts']:
-        charts = COMPONENTS['create_overview_charts'](filtered_data)
-        
+
+    viz_function = get_visualizations()
+    if viz_function:
+        charts = viz_function(filtered_data)
+
         # Traffic Timeline
         st.subheader("📈 Traffic Timeline")
         st.plotly_chart(charts['timeline'], use_container_width=True)
-        
+
         # Status Code Distribution and Top Pages
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.subheader("📊 Status Code Distribution")
             st.plotly_chart(charts['status_dist'], use_container_width=True)
-        
+
         with col2:
             st.subheader("🔝 Top Pages")
             st.plotly_chart(charts['top_pages'], use_container_width=True)
-        
+
         # Bot vs Human Traffic
         st.subheader("🤖 Bot vs Human Traffic")
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.plotly_chart(charts['bot_human_ratio'], use_container_width=True)
-        
+
         with col2:
             st.plotly_chart(charts['bot_timeline'], use_container_width=True)
     else:

@@ -1,7 +1,7 @@
 # components/log_parser.py
 
 """
-Multi-format log file parser
+Multi-format log file parser with chunked processing support
 """
 import re
 import pandas as pd
@@ -10,34 +10,46 @@ from datetime import datetime
 import json
 import gzip
 from io import StringIO, BytesIO
-from typing import Union, Dict, List, Optional
+from typing import Union, Dict, List, Optional, Iterator, Callable
 import streamlit as st
-from config import LOG_PATTERNS, CHUNK_SIZE
+from config import LOG_PATTERNS, CHUNK_SIZE, MAX_FILE_SIZE_MB, ENABLE_SAMPLING, SAMPLE_RATE
 
 class LogParser:
-    """Universal log file parser supporting multiple formats"""
-    
+    """Universal log file parser supporting multiple formats with chunked processing"""
+
     def __init__(self):
         self.patterns = LOG_PATTERNS
         self.format_detected = None
         self.parse_errors = []
-        
-    def parse(self, file_object) -> pd.DataFrame:
+        self.chunk_size = CHUNK_SIZE
+        self.max_file_size_mb = MAX_FILE_SIZE_MB
+
+    def parse(self, file_object, chunked: bool = True, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """
-        Parse log file and return DataFrame
-        
+        Parse log file and return DataFrame with optional chunked processing
+
         Args:
             file_object: Streamlit uploaded file object
-            
+            chunked: Whether to use chunked processing for large files
+            progress_callback: Optional callback for progress updates
+
         Returns:
             pd.DataFrame: Parsed log data
         """
-        # Read file content
+        # Check file size for chunked processing decision
+        file_size_mb = len(file_object.read()) / (1024 * 1024)
+        file_object.seek(0)  # Reset file pointer
+
+        # Use chunked processing for large files
+        if chunked and file_size_mb > 50:  # 50MB threshold
+            return self._parse_chunked(file_object, progress_callback)
+
+        # Read file content for smaller files
         content = self._read_file(file_object)
-        
+
         # Detect format
         log_format = self._detect_format(content)
-        
+
         if log_format == 'json':
             return self._parse_json(content)
         elif log_format:
@@ -52,8 +64,151 @@ class LogParser:
                 content = f.read()
         else:
             content = str(file_object.read(), 'utf-8', errors='ignore')
-        
+
         return content
+
+    def _parse_chunked(self, file_object, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
+        """
+        Parse large files using chunked processing
+
+        Args:
+            file_object: Streamlit uploaded file object
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            pd.DataFrame: Parsed log data
+        """
+        # Get file size for progress tracking
+        file_size = self._get_file_size(file_object)
+
+        # Detect format from first chunk
+        first_chunk = self._read_first_chunk(file_object)
+        log_format = self._detect_format(first_chunk)
+
+        # Reset file pointer
+        file_object.seek(0)
+
+        # Process file in chunks
+        chunks = []
+        total_processed = 0
+
+        for chunk_content, chunk_size in self._chunk_file_generator(file_object, file_size):
+            if progress_callback:
+                progress = min(total_processed / file_size, 1.0)
+                progress_callback(progress, f"Processing chunk... ({len(chunks) + 1})")
+
+            # Parse chunk based on format
+            if log_format == 'json':
+                chunk_df = self._parse_json_chunk(chunk_content)
+            elif log_format:
+                chunk_df = self._parse_structured_chunk(chunk_content, log_format)
+            else:
+                chunk_df = self._parse_csv_chunk(chunk_content)
+
+            if not chunk_df.empty:
+                chunks.append(chunk_df)
+
+            total_processed += chunk_size
+
+            # Memory management: combine chunks periodically
+            if len(chunks) >= 10:  # Combine every 10 chunks
+                combined_df = pd.concat(chunks, ignore_index=True)
+                chunks = [combined_df]
+
+        # Final combination
+        if chunks:
+            final_df = pd.concat(chunks, ignore_index=True)
+            return self._post_process(final_df)
+        else:
+            return pd.DataFrame()
+
+    def _get_file_size(self, file_object) -> int:
+        """Get file size without reading entire file"""
+        current_pos = file_object.tell()
+        file_object.seek(0, 2)  # Seek to end
+        size = file_object.tell()
+        file_object.seek(current_pos)  # Reset position
+        return size
+
+    def _read_first_chunk(self, file_object, chunk_size: int = 8192) -> str:
+        """Read first chunk to detect format"""
+        current_pos = file_object.tell()
+        chunk = file_object.read(chunk_size)
+        file_object.seek(current_pos)  # Reset position
+        return str(chunk, 'utf-8', errors='ignore')
+
+    def _chunk_file_generator(self, file_object, file_size: int, chunk_size: int = None) -> Iterator[tuple]:
+        """
+        Generate chunks from file
+
+        Args:
+            file_object: File object to read from
+            file_size: Total file size
+            chunk_size: Size of each chunk in bytes
+
+        Yields:
+            tuple: (chunk_content, chunk_size)
+        """
+        if chunk_size is None:
+            chunk_size = min(self.chunk_size * 1024, file_size // 100)  # Adaptive chunk size
+
+        bytes_read = 0
+
+        while bytes_read < file_size:
+            remaining = file_size - bytes_read
+            current_chunk_size = min(chunk_size, remaining)
+
+            chunk_data = file_object.read(current_chunk_size)
+            if not chunk_data:
+                break
+
+            chunk_content = str(chunk_data, 'utf-8', errors='ignore')
+            yield chunk_content, current_chunk_size
+
+            bytes_read += current_chunk_size
+
+    def _parse_json_chunk(self, content: str) -> pd.DataFrame:
+        """Parse JSON chunk"""
+        records = []
+        lines = content.split('\n')
+
+        for line in lines:
+            if line.strip():
+                try:
+                    record = json.loads(line)
+                    records.append(record)
+                except json.JSONDecodeError:
+                    continue  # Skip malformed lines
+
+        return pd.DataFrame(records) if records else pd.DataFrame()
+
+    def _parse_structured_chunk(self, content: str, log_format: str) -> pd.DataFrame:
+        """Parse structured log chunk"""
+        pattern = re.compile(self.patterns[log_format])
+        records = []
+        lines = content.split('\n')
+
+        for line in lines:
+            if not line or line.startswith('#'):
+                continue
+
+            match = pattern.match(line)
+            if match:
+                groups = match.groups()
+                record = self._extract_fields(groups, log_format)
+                records.append(record)
+
+        return pd.DataFrame(records) if records else pd.DataFrame()
+
+    def _parse_csv_chunk(self, content: str) -> pd.DataFrame:
+        """Parse CSV chunk"""
+        try:
+            # For CSV, we need complete lines, so this is a simplified approach
+            # In production, you'd want more sophisticated CSV chunking
+            df = pd.read_csv(StringIO(content), error_bad_lines=False, warn_bad_lines=False)
+            return df
+        except Exception:
+            return pd.DataFrame()
     
     def _detect_format(self, content: str) -> Optional[str]:
         """Detect log file format"""
@@ -84,24 +239,26 @@ class LogParser:
         self.format_detected = 'csv'
         return None
     
-    def _parse_structured(self, content: str, log_format: str) -> pd.DataFrame:
+    def _parse_structured(self, content: str, log_format: str,
+                          show_progress: bool = True) -> pd.DataFrame:
         """Parse structured log formats (Apache, Nginx, IIS, CloudFront)"""
         pattern = re.compile(self.patterns[log_format])
-        
+
         records = []
         lines = content.split('\n')
-        
-        # Progress tracking
-        total_lines = len(lines)
-        progress_bar = st.progress(0)
-        
+
+        # Progress tracking (optional)
+        progress_bar = None
+        if show_progress and len(lines) > 1000:
+            progress_bar = st.progress(0)
+
         for idx, line in enumerate(lines):
-            if idx % 1000 == 0:
-                progress_bar.progress(idx / total_lines)
-            
+            if progress_bar and idx % 1000 == 0:
+                progress_bar.progress(idx / len(lines))
+
             if not line or line.startswith('#'):
                 continue
-                
+
             match = pattern.match(line)
             if match:
                 groups = match.groups()
@@ -109,9 +266,10 @@ class LogParser:
                 records.append(record)
             else:
                 self.parse_errors.append(f"Line {idx}: {line[:100]}")
-        
-        progress_bar.empty()
-        
+
+        if progress_bar:
+            progress_bar.empty()
+
         df = pd.DataFrame(records)
         return self._post_process(df)
     

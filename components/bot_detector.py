@@ -16,6 +16,10 @@ import streamlit as st
 from user_agents import parse
 import httpagentparser
 from config import KNOWN_BOTS, GOOGLE_BOT_IPS, MIN_BOT_CONFIDENCE
+import concurrent.futures
+import threading
+from functools import lru_cache
+import time
 
 class BotDetector:
     """Advanced bot detection using ML and verification techniques"""
@@ -26,6 +30,8 @@ class BotDetector:
         self.model = None
         self.scaler = StandardScaler()
         self.bot_patterns = self._compile_bot_patterns()
+        self.dns_cache = {}  # Cache for DNS verification results
+        self.dns_timeout = 2.0  # DNS timeout in seconds
         
     def detect_bots(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -44,9 +50,9 @@ class BotDetector:
         if all(col in df.columns for col in ['ip', 'timestamp']):
             df = self._analyze_behavior(df)
         
-        # Method 3: DNS verification for claimed bots
+        # Method 3: DNS verification for claimed bots (optimized batch processing)
         if 'ip' in df.columns and 'user_agent' in df.columns:
-            df['bot_verified'] = df.apply(self._verify_bot, axis=1)
+            df['bot_verified'] = self._batch_verify_bots(df)
         
         # Method 4: ML-based detection
         if self.model is not None:
@@ -126,7 +132,130 @@ class BotDetector:
         df = df.merge(ip_stats[['ip', 'bot_behavior']], on='ip', how='left')
         
         return df
-    
+
+    def _batch_verify_bots(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Batch verify bots using optimized DNS lookups
+
+        Args:
+            df: DataFrame with ip and user_agent columns
+
+        Returns:
+            Series of boolean verification results
+        """
+        # Filter to only suspected bots to reduce DNS lookups
+        suspected_bots = df[df['bot_ua_match'] == True].copy()
+
+        if suspected_bots.empty:
+            return pd.Series(False, index=df.index)
+
+        # Group by IP and user agent type for batching
+        google_ips = []
+        bing_ips = []
+        other_bots = []
+
+        for idx, row in suspected_bots.iterrows():
+            ip = row.get('ip', '')
+            ua = row.get('user_agent', '').lower()
+
+            if 'googlebot' in ua:
+                google_ips.append(ip)
+            elif 'bingbot' in ua:
+                bing_ips.append(ip)
+            else:
+                other_bots.append((ip, ua))
+
+        # Batch verify Google bots
+        google_results = self._batch_verify_googlebots(google_ips) if google_ips else {}
+
+        # Batch verify Bing bots
+        bing_results = self._batch_verify_bingbots(bing_ips) if bing_ips else {}
+
+        # For other bots, trust UA (no DNS verification needed)
+        other_results = {ip: True for ip, ua in other_bots}
+
+        # Combine results
+        verification_results = {**google_results, **bing_results, **other_results}
+
+        # Create result series
+        results = []
+        for idx, row in df.iterrows():
+            ip = row.get('ip', '')
+            if ip in verification_results:
+                results.append(verification_results[ip])
+            else:
+                results.append(False)
+
+        return pd.Series(results, index=df.index)
+
+    @lru_cache(maxsize=1000)
+    def _cached_dns_lookup(self, ip: str, bot_type: str) -> bool:
+        """
+        Cached DNS lookup with timeout
+
+        Args:
+            ip: IP address to verify
+            bot_type: 'google' or 'bing'
+
+        Returns:
+            True if verified as legitimate bot
+        """
+        if ip in self.dns_cache:
+            return self.dns_cache[ip]
+
+        try:
+            # Set DNS resolver timeout
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = self.dns_timeout
+            resolver.lifetime = self.dns_timeout
+
+            rev_name = dns.reversename.from_address(ip)
+            ptr_records = resolver.resolve(rev_name, 'PTR')
+
+            for ptr in ptr_records:
+                hostname = str(ptr).lower()
+
+                if bot_type == 'google':
+                    if hostname.endswith('.googlebot.com.') or hostname.endswith('.google.com.'):
+                        forward_records = resolver.resolve(hostname.rstrip('.'), 'A')
+                        for forward in forward_records:
+                            if str(forward) == ip:
+                                self.dns_cache[ip] = True
+                                return True
+                elif bot_type == 'bing':
+                    if hostname.endswith('.search.msn.com.'):
+                        forward_records = resolver.resolve(hostname.rstrip('.'), 'A')
+                        for forward in forward_records:
+                            if str(forward) == ip:
+                                self.dns_cache[ip] = True
+                                return True
+
+        except (dns.resolver.Timeout, dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            # DNS timeout or no record - cache as False
+            self.dns_cache[ip] = False
+            return False
+        except Exception:
+            # Other DNS errors - cache as False
+            self.dns_cache[ip] = False
+            return False
+
+        self.dns_cache[ip] = False
+        return False
+
+    def _batch_verify_googlebots(self, ips: List[str]) -> Dict[str, bool]:
+        """Batch verify Googlebot IPs"""
+        results = {}
+        for ip in ips:
+            results[ip] = self._cached_dns_lookup(ip, 'google')
+        return results
+
+    def _batch_verify_bingbots(self, ips: List[str]) -> Dict[str, bool]:
+        """Batch verify Bingbot IPs"""
+        results = {}
+        for ip in ips:
+            results[ip] = self._cached_dns_lookup(ip, 'bing')
+        return results
+
     def _verify_bot(self, row: pd.Series) -> bool:
         """Verify if claimed bot is legitimate using DNS"""
         if not row.get('bot_ua_match'):

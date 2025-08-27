@@ -5,7 +5,7 @@ Data processing utilities
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Generator
+from typing import Dict, List, Tuple, Optional, Generator, Callable
 from datetime import datetime, timedelta
 import streamlit as st
 from config import (
@@ -16,47 +16,132 @@ from config import (
 )
 from components.bot_detector import BotDetector
 
-def process_log_data(df: pd.DataFrame) -> pd.DataFrame:
+def process_log_data(df: pd.DataFrame, processing_mode: str = 'full',
+                     enable_progress: bool = True) -> pd.DataFrame:
     """
-    Process raw log data with all enrichments
-    
+    Process raw log data with optimized pipeline and lazy loading options
+
     Args:
         df: Raw log DataFrame
-        
+        processing_mode: 'full', 'basic', or 'minimal' processing
+        enable_progress: Whether to show progress indicators
+
     Returns:
         Processed DataFrame with additional columns
     """
-    with st.spinner("Processing log data..."):
-        # Apply sampling if needed
+    if enable_progress:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+    try:
+        total_steps = 7 if processing_mode == 'full' else 3
+        current_step = 0
+
+        # Step 1: Early sampling for large datasets (most impactful optimization)
+        if enable_progress:
+            status_text.text("Checking dataset size...")
+            progress_bar.progress(current_step / total_steps)
+
         if ENABLE_SAMPLING and len(df) > MIN_ROWS_FOR_SAMPLING:
+            original_size = len(df)
             df = apply_sampling(df, SAMPLE_RATE)
-            st.info(f"Sampling applied: {len(df):,} rows")
-        
-        # Ensure timestamp column
+            if enable_progress:
+                st.info(f"Early sampling applied: {original_size:,} → {len(df):,} rows")
+
+        current_step += 1
+
+        # Step 2: Ensure timestamp column
+        if enable_progress:
+            status_text.text("Processing timestamps...")
+            progress_bar.progress(current_step / total_steps)
+
         df = ensure_timestamp(df)
-        
-        # Add calculated fields
+        current_step += 1
+
+        # Step 3: Add calculated fields
+        if enable_progress:
+            status_text.text("Adding calculated fields...")
+            progress_bar.progress(current_step / total_steps)
+
         df = add_calculated_fields(df)
-        
-        # Detect bots
-        bot_detector = BotDetector()
-        df = bot_detector.detect_bots(df)
-        
-        # Add session information
+        current_step += 1
+
+        if processing_mode == 'minimal':
+            if enable_progress:
+                progress_bar.empty()
+                status_text.empty()
+            return df
+
+        # Step 4: Bot detection (expensive operation)
+        if enable_progress:
+            status_text.text("Detecting bots...")
+            progress_bar.progress(current_step / total_steps)
+
+        if processing_mode == 'full':
+            bot_detector = BotDetector()
+            df = bot_detector.detect_bots(df)
+        else:
+            # Basic bot detection for 'basic' mode
+            df = basic_bot_detection(df)
+
+        current_step += 1
+
+        if processing_mode == 'basic':
+            if enable_progress:
+                progress_bar.empty()
+                status_text.empty()
+            return df
+
+        # Step 5: Session identification
+        if enable_progress:
+            status_text.text("Identifying sessions...")
+            progress_bar.progress(current_step / total_steps)
+
         df = identify_sessions(df)
-        
-        # Add geographic information (if IP available)
+        current_step += 1
+
+        # Step 6: Geographic information
+        if enable_progress:
+            status_text.text("Adding geographic data...")
+            progress_bar.progress(current_step / total_steps)
+
         if 'ip' in df.columns:
             df = add_geo_info(df)
-        
-        # Clean and standardize URLs
+        current_step += 1
+
+        # Step 7: URL processing and time features
+        if enable_progress:
+            status_text.text("Finalizing data...")
+            progress_bar.progress(current_step / total_steps)
+
         if 'url' in df.columns:
             df = clean_urls(df)
-        
-        # Add time-based features
+
         df = add_time_features(df)
-        
+
+        if enable_progress:
+            progress_bar.empty()
+            status_text.empty()
+
         return df
+
+    except Exception as e:
+        if enable_progress:
+            progress_bar.empty()
+            status_text.empty()
+        raise e
+
+def basic_bot_detection(df: pd.DataFrame) -> pd.DataFrame:
+    """Basic bot detection without ML or DNS lookups"""
+    if 'user_agent' in df.columns:
+        # Simple pattern matching
+        bot_patterns = ['bot', 'crawl', 'spider', 'scraper', 'scan']
+        pattern = '|'.join(bot_patterns)
+        df['is_bot'] = df['user_agent'].str.contains(pattern, case=False, na=False)
+    else:
+        df['is_bot'] = False
+
+    return df
 
 def apply_sampling(df: pd.DataFrame, sample_rate: float) -> pd.DataFrame:
     """
@@ -380,26 +465,125 @@ def detect_anomalies(df: pd.DataFrame, column: str, threshold: float = 3) -> pd.
 def calculate_rolling_stats(df: pd.DataFrame, column: str, window: str = '1H') -> pd.DataFrame:
     """
     Calculate rolling statistics
-    
+
     Args:
         df: Input DataFrame with timestamp
         column: Column to calculate stats for
         window: Rolling window size
-        
+
     Returns:
         DataFrame with rolling stats
     """
     if 'timestamp' not in df.columns or column not in df.columns:
         return df
-    
+
     df = df.sort_values('timestamp')
     df = df.set_index('timestamp')
-    
+
     df[f'{column}_rolling_mean'] = df[column].rolling(window).mean()
     df[f'{column}_rolling_std'] = df[column].rolling(window).std()
     df[f'{column}_rolling_max'] = df[column].rolling(window).max()
     df[f'{column}_rolling_min'] = df[column].rolling(window).min()
-    
+
     df = df.reset_index()
-    
+
     return df
+
+
+def stream_process_log_data(file_object, processing_mode: str = 'full',
+                           chunk_size: int = CHUNK_SIZE,
+                           progress_callback: Optional[Callable] = None) -> pd.DataFrame:
+    """
+    Stream process large log files without loading everything into memory
+
+    Args:
+        file_object: Streamlit uploaded file object
+        processing_mode: Processing mode ('full', 'basic', 'minimal')
+        chunk_size: Size of chunks to process
+        progress_callback: Optional progress callback
+
+    Returns:
+        Processed DataFrame
+    """
+    from components.log_parser import LogParser
+
+    parser = LogParser()
+    all_chunks = []
+
+    # Get file size for progress tracking
+    file_size = parser._get_file_size(file_object)
+
+    # Process file in chunks
+    total_processed = 0
+
+    for chunk_content, chunk_bytes in parser._chunk_file_generator(file_object, file_size):
+        if progress_callback:
+            progress = min(total_processed / file_size, 1.0)
+            progress_callback(progress, f"Processing chunk... ({len(all_chunks) + 1})")
+
+        # Parse chunk
+        chunk_df = parser._parse_structured_chunk(chunk_content, parser.format_detected or 'apache_common')
+
+        if not chunk_df.empty:
+            # Process chunk immediately (early processing)
+            chunk_df = process_log_data(chunk_df, processing_mode, enable_progress=False)
+            all_chunks.append(chunk_df)
+
+        total_processed += chunk_bytes
+
+        # Memory management: combine chunks periodically
+        if len(all_chunks) >= 20:  # Combine every 20 chunks
+            combined_df = pd.concat(all_chunks, ignore_index=True)
+            all_chunks = [combined_df]
+
+    # Final combination
+    if all_chunks:
+        final_df = pd.concat(all_chunks, ignore_index=True)
+        return final_df
+    else:
+        return pd.DataFrame()
+
+
+def estimate_processing_time(file_size_mb: float, processing_mode: str = 'full') -> float:
+    """
+    Estimate processing time based on file size and processing mode
+
+    Args:
+        file_size_mb: File size in MB
+        processing_mode: Processing mode
+
+    Returns:
+        Estimated time in seconds
+    """
+    # Base processing time per MB (empirical estimates)
+    if processing_mode == 'minimal':
+        time_per_mb = 0.1  # seconds
+    elif processing_mode == 'basic':
+        time_per_mb = 0.5
+    else:  # full
+        time_per_mb = 2.0
+
+    # Add overhead for large files
+    if file_size_mb > 100:
+        overhead_factor = 1 + (file_size_mb - 100) / 500
+        time_per_mb *= overhead_factor
+
+    return file_size_mb * time_per_mb
+
+
+def get_optimal_processing_mode(file_size_mb: float) -> str:
+    """
+    Recommend optimal processing mode based on file size
+
+    Args:
+        file_size_mb: File size in MB
+
+    Returns:
+        Recommended processing mode
+    """
+    if file_size_mb < 10:
+        return 'full'
+    elif file_size_mb < 50:
+        return 'basic'
+    else:
+        return 'minimal'
